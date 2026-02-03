@@ -23,49 +23,45 @@ import {
   Settings,
   ChevronLeft,
   WifiOff,
-  AlertTriangle
+  AlertTriangle,
+  User,
+  RefreshCw
 } from 'lucide-react';
-
-// Función para obtener variables de entorno con fallback seguro
-const getSafeEnv = (key) => {
-  try {
-    // En Vercel/CRA deben empezar con REACT_APP_
-    if (typeof process !== 'undefined' && process.env) {
-      return process.env[key] || process.env[`REACT_APP_${key}`] || "";
-    }
-  } catch (e) {}
-  return "";
-};
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authMode, setAuthMode] = useState('login'); 
-  const [showProfileEditor, setShowProfileEditor] = useState(false);
-  const [configError, setConfigError] = useState(null);
-  
+  const [initStatus, setInitStatus] = useState("Iniciando...");
+
+  // Inicialización ultra-defensiva
   const firebaseData = useMemo(() => {
-    let services = { auth: null, db: null, available: false, appId: 'default-app' };
+    const services = { auth: null, db: null, available: false, appId: 'demo-app' };
     
     try {
-      // 1. Intentar obtener configuración de producción (Vercel)
-      let config = {
-        apiKey: getSafeEnv("FIREBASE_API_KEY"),
-        authDomain: getSafeEnv("FIREBASE_AUTH_DOMAIN"),
-        projectId: getSafeEnv("FIREBASE_PROJECT_ID"),
-        storageBucket: getSafeEnv("FIREBASE_STORAGE_BUCKET"),
-        messagingSenderId: getSafeEnv("FIREBASE_MESSAGING_SENDER_ID"),
-        appId: getSafeEnv("FIREBASE_APP_ID")
-      };
+      let config = null;
 
-      // 2. Si no hay producción, intentar configuración local de este chat
-      if (!config.apiKey && typeof __firebase_config !== 'undefined') {
+      // 1. Verificación manual de variables globales para evitar errores de referencia
+      const globalProcess = typeof process !== 'undefined' ? process : null;
+      const env = globalProcess?.env || {};
+      
+      const apiKey = env.REACT_APP_FIREBASE_API_KEY || env.FIREBASE_API_KEY;
+
+      if (apiKey) {
+        config = {
+          apiKey: apiKey,
+          authDomain: env.REACT_APP_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN,
+          projectId: env.REACT_APP_FIREBASE_PROJECT_ID || env.FIREBASE_PROJECT_ID,
+          storageBucket: env.REACT_APP_FIREBASE_STORAGE_BUCKET || env.FIREBASE_STORAGE_BUCKET,
+          messagingSenderId: env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || env.FIREBASE_MESSAGING_SENDER_ID,
+          appId: env.REACT_APP_FIREBASE_APP_ID || env.FIREBASE_APP_ID
+        };
+      } else if (typeof __firebase_config !== 'undefined' && __firebase_config) {
         config = JSON.parse(__firebase_config);
       }
 
-      // 3. Obtener App ID
-      const activeAppId = getSafeEnv("CUSTOM_APP_ID") || 
-                         (typeof __app_id !== 'undefined' ? __app_id : 'mi-app-produccion');
+      const activeAppId = env.REACT_APP_CUSTOM_APP_ID || 
+                         (typeof __app_id !== 'undefined' ? __app_id : 'default-app');
 
       if (config && config.apiKey) {
         const app = getApps().length === 0 ? initializeApp(config) : getApps()[0];
@@ -73,33 +69,25 @@ export default function App() {
         services.db = getFirestore(app);
         services.available = true;
         services.appId = activeAppId;
-      } else {
-        // Solo lanzamos error si no estamos en el simulador local
-        if (typeof __firebase_config === 'undefined') {
-          console.warn("Firebase no configurado. Verifica tus variables de entorno en Vercel.");
-        }
       }
     } catch (e) {
-      console.error("Firebase Init Error:", e);
-      setConfigError(e.message);
+      console.error("Init failure:", e);
     }
     return services;
   }, []);
 
-  const [userData, setUserData] = useState({
-    displayName: 'Usuario',
-    role: 'Miembro'
-  });
-  
+  const [userData, setUserData] = useState({ displayName: 'Usuario', role: 'Miembro' });
   const [formData, setFormData] = useState({ email: '', password: '', name: '' });
-  const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
   useEffect(() => {
-    if (!firebaseData.available) {
+    // Timeout de seguridad para forzar la aparición de la UI
+    const safetyTimeout = setTimeout(() => {
       setLoading(false);
-      return;
-    }
+      setInitStatus("Completado");
+    }, 1500);
+
+    if (!firebaseData.available) return () => clearTimeout(safetyTimeout);
 
     const initAuth = async () => {
       try {
@@ -115,9 +103,13 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(firebaseData.auth, (currentUser) => {
       setUser(currentUser);
       setLoading(false);
+      clearTimeout(safetyTimeout);
     });
     
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      clearTimeout(safetyTimeout);
+    };
   }, [firebaseData]);
 
   useEffect(() => {
@@ -125,165 +117,161 @@ export default function App() {
 
     const userDocRef = doc(firebaseData.db, 'artifacts', firebaseData.appId, 'users', user.uid, 'profile', 'data');
     const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setUserData(docSnap.data());
-      }
-    }, (err) => console.warn("Firestore listener error:", err));
+      if (docSnap.exists()) setUserData(docSnap.data());
+    }, (err) => console.log("Waiting for data..."));
 
     return () => unsubscribe();
   }, [user, firebaseData]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
-    setLoading(true);
-
     if (!firebaseData.available) {
-      // Modo DEMO si no hay Firebase (Útil para ver que el código funciona en Vercel antes de conectar DB)
-      setTimeout(() => {
-        setUser({ uid: 'demo-user', email: formData.email });
-        setUserData({ displayName: formData.name || 'Usuario Demo', role: 'Modo Vista Previa' });
-        setLoading(false);
-        showMessage('success', 'Sesión iniciada (Modo Demo sin Firebase)');
-      }, 800);
+      setUser({ uid: 'demo-local', email: formData.email });
+      setUserData({ displayName: formData.name || 'Invitado', role: 'Modo Local' });
       return;
     }
 
+    setLoading(true);
     try {
-      if (!firebaseData.auth.currentUser) {
-        await signInAnonymously(firebaseData.auth);
-      }
+      if (!firebaseData.auth.currentUser) await signInAnonymously(firebaseData.auth);
       
-      if (authMode === 'register' && firebaseData.auth.currentUser) {
+      if (authMode === 'register') {
         const userDocRef = doc(firebaseData.db, 'artifacts', firebaseData.appId, 'users', firebaseData.auth.currentUser.uid, 'profile', 'data');
         await setDoc(userDocRef, {
-          displayName: formData.name || 'Nuevo Usuario',
+          displayName: formData.name || 'Usuario',
           role: 'Miembro',
           createdAt: new Date().toISOString()
         });
       }
-      showMessage('success', '¡Conectado exitosamente!');
+      setMessage({ type: 'success', text: '¡Sesión Iniciada!' });
     } catch (err) {
-      showMessage('error', 'Error: ' + err.message);
+      setMessage({ type: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
   };
 
-  const showMessage = (type, text) => {
-    setMessage({ type, text });
-    setTimeout(() => setMessage({ type: '', text: '' }), 3000);
-  };
-
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
-        <Loader2 className="w-10 h-10 text-blue-600 animate-spin mb-4" />
-        <p className="text-slate-500 font-medium animate-pulse">Cargando sistema...</p>
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8">
+        <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-6" />
+        <h2 className="text-xl font-bold text-slate-800 mb-2">Cargando aplicación</h2>
+        <p className="text-slate-400 text-sm">{initStatus}</p>
+        <div className="mt-12 p-4 bg-slate-50 rounded-2xl border border-slate-100 max-w-xs text-center text-[10px] text-slate-400">
+          Si la pantalla se queda cargando, asegúrate de haber configurado las variables REACT_APP_ en Vercel.
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
-      {/* Indicador de Estado de Conexión */}
-      <div className="fixed bottom-4 right-4 z-50">
-        {!firebaseData.available ? (
-          <div className="bg-amber-100 text-amber-800 px-4 py-2 rounded-2xl text-xs font-bold border border-amber-200 flex items-center gap-2 shadow-lg">
-            <AlertTriangle className="w-4 h-4" /> MODO DEMO (SIN FIREBASE)
-          </div>
-        ) : (
-          <div className="bg-green-100 text-green-800 px-4 py-2 rounded-2xl text-xs font-bold border border-green-200 flex items-center gap-2 shadow-lg">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" /> CLOUD SYNC ACTIVO
-          </div>
-        )}
-      </div>
-
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* Notificaciones */}
       {message.text && (
-        <div className={`fixed top-6 right-6 px-6 py-3 rounded-2xl shadow-2xl z-50 animate-in fade-in slide-in-from-top-4 ${
-          message.type === 'success' ? 'bg-slate-900 text-white' : 'bg-red-600 text-white'
+        <div className={`fixed top-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full shadow-2xl z-50 animate-bounce ${
+          message.type === 'success' ? 'bg-slate-900 text-white' : 'bg-red-500 text-white'
         }`}>
-          <span className="font-medium text-sm">{message.text}</span>
+          <span className="text-xs font-bold uppercase">{message.text}</span>
         </div>
       )}
 
-      {!user ? (
-        <div className="flex min-h-screen items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 overflow-hidden">
-            <div className="p-10">
-              <div className="flex justify-center mb-8">
-                <div className="bg-blue-600 p-4 rounded-2xl shadow-xl">
-                  <ShieldCheck className="w-8 h-8 text-white" />
-                </div>
-              </div>
-              <h1 className="text-3xl font-bold text-center mb-2 tracking-tight">
-                {authMode === 'login' ? 'Bienvenido' : 'Crear Cuenta'}
-              </h1>
-              <p className="text-center text-slate-500 mb-8">Acceso seguro al sistema</p>
+      {/* Indicador de Conexión */}
+      <div className="fixed bottom-6 left-6 z-50">
+        <div className="bg-white/90 backdrop-blur-md border border-slate-200 px-4 py-2.5 rounded-2xl flex items-center gap-3 shadow-xl">
+          <div className={`w-2 h-2 rounded-full ${firebaseData.available ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+            {firebaseData.available ? 'Nube Conectada' : 'Modo Offline'}
+          </span>
+        </div>
+      </div>
 
-              <form onSubmit={handleAuth} className="space-y-4">
-                {authMode === 'register' && (
+      {!user ? (
+        <div className="flex min-h-screen items-center justify-center p-6">
+          <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 p-10">
+            <div className="bg-blue-600 w-16 h-16 rounded-2xl flex items-center justify-center mb-8 mx-auto shadow-lg shadow-blue-200">
+              <ShieldCheck className="w-8 h-8 text-white" />
+            </div>
+            
+            <h1 className="text-3xl font-black text-center mb-2 tracking-tight">
+              {authMode === 'login' ? 'Bienvenido' : 'Crear Cuenta'}
+            </h1>
+            <p className="text-center text-slate-400 text-sm mb-10">Gestiona tu identidad digital</p>
+
+            <form onSubmit={handleAuth} className="space-y-4">
+              {authMode === 'register' && (
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input
                     type="text"
                     placeholder="Tu nombre"
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                    className="w-full pl-12 pr-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"
                     value={formData.name}
                     onChange={(e) => setFormData({...formData, name: e.target.value})}
                     required
                   />
-                )}
-                <input
-                  type="email"
-                  placeholder="Email"
-                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                  value={formData.email}
-                  onChange={(e) => setFormData({...formData, email: e.target.value})}
-                  required
-                />
-                <input
-                  type="password"
-                  placeholder="Contraseña"
-                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                  value={formData.password}
-                  onChange={(e) => setFormData({...formData, password: e.target.value})}
-                  required
-                />
-                <button
-                  type="submit"
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95"
-                >
-                  {authMode === 'login' ? 'Entrar ahora' : 'Registrarme'}
-                  <ArrowRight className="w-5 h-5" />
-                </button>
-              </form>
+                </div>
+              )}
+              <input
+                type="email"
+                placeholder="Email corporativo"
+                className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"
+                value={formData.email}
+                onChange={(e) => setFormData({...formData, email: e.target.value})}
+                required
+              />
+              <input
+                type="password"
+                placeholder="Contraseña"
+                className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"
+                value={formData.password}
+                onChange={(e) => setFormData({...formData, password: e.target.value})}
+                required
+              />
+              <button
+                type="submit"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-100 flex items-center justify-center gap-3 transition-all active:scale-95"
+              >
+                {authMode === 'login' ? 'Iniciar Sesión' : 'Registrarse'}
+                <ArrowRight className="w-5 h-5" />
+              </button>
+            </form>
 
+            <div className="mt-10 pt-8 border-t border-slate-50">
               <button
                 onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-                className="w-full mt-8 text-sm text-slate-400 hover:text-blue-600 font-medium transition-colors"
+                className="w-full text-xs font-bold text-slate-400 hover:text-blue-600 transition-colors uppercase tracking-widest"
               >
-                {authMode === 'login' ? '¿No tienes cuenta? Regístrate' : '¿Ya tienes cuenta? Ingresa'}
+                {authMode === 'login' ? '¿Eres nuevo aquí? Crea una cuenta' : '¿Ya tienes cuenta? Ingresa'}
               </button>
             </div>
           </div>
         </div>
       ) : (
         <div className="min-h-screen flex items-center justify-center p-6">
-          <div className="w-full max-w-2xl bg-white rounded-[3rem] p-12 shadow-2xl border border-slate-100 text-center">
-            <div className="w-24 h-24 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-3xl mx-auto flex items-center justify-center text-white text-4xl font-bold mb-8 shadow-xl">
+          <div className="w-full max-w-lg bg-white rounded-[3rem] p-12 shadow-2xl border border-slate-100 text-center relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-indigo-600" />
+            
+            <div className="w-28 h-28 bg-slate-900 rounded-[2rem] mx-auto flex items-center justify-center text-white text-5xl font-black mb-8 shadow-2xl">
               {userData.displayName?.charAt(0)}
             </div>
-            <h2 className="text-4xl font-black text-slate-900 mb-2 tracking-tight">¡Bienvenido!</h2>
-            <p className="text-lg text-slate-500 mb-10">
-              Sesión iniciada como <span className="font-bold text-slate-800">{userData.displayName}</span>
+            
+            <h2 className="text-4xl font-black text-slate-900 mb-2">
+              Hola, {userData.displayName}!
+            </h2>
+            <p className="text-slate-400 font-bold mb-12 tracking-widest uppercase text-xs">
+              {userData.role}
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button
-                onClick={() => signOut(firebaseData.auth || {}).catch(() => setUser(null))}
-                className="px-12 py-4 bg-slate-900 text-white font-bold rounded-2xl flex items-center justify-center gap-2 hover:bg-black transition-all shadow-lg active:scale-95"
-              >
-                <LogOut className="w-5 h-5" /> Cerrar Sesión
-              </button>
-            </div>
+            <button
+              onClick={() => {
+                if (firebaseData.available) signOut(firebaseData.auth);
+                setUser(null);
+                window.location.reload(); // Recarga para asegurar limpieza de estado
+              }}
+              className="px-12 py-5 bg-red-50 text-red-600 font-black rounded-2xl flex items-center justify-center gap-3 mx-auto hover:bg-red-100 transition-all active:scale-95"
+            >
+              <LogOut className="w-5 h-5" /> Cerrar Sesión
+            </button>
           </div>
         </div>
       )}
