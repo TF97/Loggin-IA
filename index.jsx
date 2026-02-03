@@ -24,9 +24,31 @@ import {
   ArrowRight,
   Settings,
   ChevronLeft,
-  AlertCircle,
   WifiOff
 } from 'lucide-react';
+
+// Función segura para obtener variables de entorno o globales
+const getEnvVar = (name) => {
+  try {
+    // Intenta obtener de process.env (Vercel/Node)
+    if (typeof process !== 'undefined' && process.env && process.env[name]) {
+      return process.env[name];
+    }
+  } catch (e) {}
+  return "";
+};
+
+// --- CONFIGURACIÓN PARA VERCEL/PRODUCCIÓN ---
+const firebaseConfig = {
+  apiKey: getEnvVar("REACT_APP_FIREBASE_API_KEY"),
+  authDomain: getEnvVar("REACT_APP_FIREBASE_AUTH_DOMAIN"),
+  projectId: getEnvVar("REACT_APP_FIREBASE_PROJECT_ID"),
+  storageBucket: getEnvVar("REACT_APP_FIREBASE_STORAGE_BUCKET"),
+  messagingSenderId: getEnvVar("REACT_APP_FIREBASE_MESSAGING_SENDER_ID"),
+  appId: getEnvVar("REACT_APP_FIREBASE_APP_ID")
+};
+
+const CUSTOM_APP_ID = getEnvVar("REACT_APP_CUSTOM_APP_ID") || 'mi-app-produccion';
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -34,21 +56,25 @@ export default function App() {
   const [authMode, setAuthMode] = useState('login'); 
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   
-  // Memoizamos la configuración para evitar re-inicializaciones
   const firebaseData = useMemo(() => {
-    let services = { auth: null, db: null, available: false, appId: 'auth-demo' };
+    let services = { auth: null, db: null, available: false, appId: 'default-app' };
     try {
-      const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-      const id = typeof __app_id !== 'undefined' ? __app_id : 'auth-demo-app';
-      
-      if (configStr) {
-        const firebaseConfig = JSON.parse(configStr);
-        // Evitar inicializar múltiples veces
-        const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+      // Verificamos si tenemos configuración de producción o del entorno local (Canvas)
+      let config = null;
+      if (firebaseConfig.apiKey) {
+        config = firebaseConfig;
+      } else if (typeof __firebase_config !== 'undefined') {
+        config = JSON.parse(__firebase_config);
+      }
+
+      const activeAppId = typeof __app_id !== 'undefined' ? __app_id : CUSTOM_APP_ID;
+
+      if (config && config.apiKey) {
+        const app = getApps().length === 0 ? initializeApp(config) : getApps()[0];
         services.auth = getAuth(app);
         services.db = getFirestore(app);
         services.available = true;
-        services.appId = id;
+        services.appId = activeAppId;
       }
     } catch (e) {
       console.error("Error inicializando Firebase:", e);
@@ -57,25 +83,17 @@ export default function App() {
   }, []);
 
   const [userData, setUserData] = useState({
-    displayName: 'Usuario Demo',
-    bio: 'Modo local activo.',
-    role: 'Administrador'
+    displayName: 'Usuario',
+    bio: '',
+    role: 'Miembro'
   });
   
-  const [formData, setFormData] = useState({
-    email: '',
-    password: '',
-    name: ''
-  });
-  
+  const [formData, setFormData] = useState({ email: '', password: '', name: '' });
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
-  const resetForm = () => {
-    setFormData({ email: '', password: '', name: '' });
-  };
+  const resetForm = () => setFormData({ email: '', password: '', name: '' });
 
-  // --- Lógica de Autenticación ---
   useEffect(() => {
     if (!firebaseData.available) {
       const timer = setTimeout(() => setLoading(false), 1000);
@@ -86,11 +104,9 @@ export default function App() {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(firebaseData.auth, __initial_auth_token);
-        } else {
-          // Si no hay token inicial, no forzamos anónimo aquí para dejar que el usuario elija
         }
       } catch (error) {
-        console.error("Error en Auth inicial:", error);
+        console.error("Auth error:", error);
       }
     };
 
@@ -104,7 +120,6 @@ export default function App() {
     return () => unsubscribe();
   }, [firebaseData]);
 
-  // --- Sincronización de Datos ---
   useEffect(() => {
     if (!user || !firebaseData.db || !firebaseData.available) return;
 
@@ -113,7 +128,7 @@ export default function App() {
       if (docSnap.exists()) {
         setUserData(docSnap.data());
       }
-    }, (err) => console.warn("Firestore inactivo o sin permisos:", err));
+    }, (err) => console.warn("Firestore listener error:", err));
 
     return () => unsubscribe();
   }, [user, firebaseData]);
@@ -125,9 +140,9 @@ export default function App() {
     if (!firebaseData.available) {
       setTimeout(() => {
         setUser({ uid: 'demo-user', email: formData.email });
-        setUserData(prev => ({ ...prev, displayName: formData.name || 'Usuario Demo' }));
+        setUserData(prev => ({ ...prev, displayName: formData.name || 'Invitado Demo' }));
         setLoading(false);
-        showMessage('success', 'Sesión iniciada (Modo Local)');
+        showMessage('success', 'Modo Demo Activo (Local)');
       }, 800);
       return;
     }
@@ -141,12 +156,12 @@ export default function App() {
         const userDocRef = doc(firebaseData.db, 'artifacts', firebaseData.appId, 'users', firebaseData.auth.currentUser.uid, 'profile', 'data');
         await setDoc(userDocRef, {
           displayName: formData.name || 'Nuevo Usuario',
-          bio: 'Bienvenido al sistema.',
+          bio: '',
           role: 'Miembro',
           createdAt: new Date().toISOString()
         });
       }
-      showMessage('success', 'Acceso concedido');
+      showMessage('success', 'Sesión iniciada');
     } catch (err) {
       showMessage('error', 'Error: ' + err.message);
     } finally {
@@ -159,7 +174,7 @@ export default function App() {
     if (!firebaseData.available) {
       setTimeout(() => {
         setIsSaving(false);
-        showMessage('success', 'Guardado localmente');
+        showMessage('success', 'Guardado local');
         setShowProfileEditor(false);
       }, 800);
       return;
@@ -168,24 +183,12 @@ export default function App() {
     try {
       const userDocRef = doc(firebaseData.db, 'artifacts', firebaseData.appId, 'users', user.uid, 'profile', 'data');
       await setDoc(userDocRef, { ...userData }, { merge: true });
-      showMessage('success', 'Perfil actualizado');
+      showMessage('success', 'Perfil guardado en la nube');
       setShowProfileEditor(false);
     } catch (err) {
       showMessage('error', 'Error al guardar');
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  const handleLogout = () => {
-    if (!firebaseData.available) {
-      setUser(null);
-      resetForm();
-      setShowProfileEditor(false);
-    } else {
-      signOut(firebaseData.auth).then(() => {
-        setShowProfileEditor(false);
-      });
     }
   };
 
@@ -196,9 +199,9 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center gap-4">
-        <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
-        <p className="text-slate-500 font-medium">Cargando sistema...</p>
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center">
+        <Loader2 className="w-10 h-10 text-blue-600 animate-spin mb-4" />
+        <p className="text-slate-500 font-medium">Iniciando...</p>
       </div>
     );
   }
@@ -206,42 +209,40 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
       {!firebaseData.available && (
-        <div className="fixed bottom-4 left-4 flex items-center gap-2 bg-amber-100 text-amber-700 px-3 py-1.5 rounded-full text-xs font-bold border border-amber-200 z-50">
-          <WifiOff className="w-3.5 h-3.5" />
-          SIN CONEXIÓN A FIREBASE
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-amber-100 text-amber-800 px-4 py-2 rounded-full text-xs font-bold border border-amber-200 z-50 shadow-sm">
+          <WifiOff className="w-4 h-4" />
+          MODO OFFLINE / CONFIGURA VERCEL
         </div>
       )}
 
       {message.text && (
-        <div className={`fixed top-6 right-6 px-6 py-3 rounded-2xl shadow-xl z-50 animate-in fade-in slide-in-from-top-4 ${
+        <div className={`fixed top-20 right-6 px-6 py-3 rounded-2xl shadow-2xl z-50 animate-in fade-in slide-in-from-top-4 ${
           message.type === 'success' ? 'bg-slate-900 text-white' : 'bg-red-600 text-white'
         }`}>
-          <div className="flex items-center gap-3">
-            <span className="font-medium text-sm">{message.text}</span>
-          </div>
+          <span className="font-medium text-sm">{message.text}</span>
         </div>
       )}
 
       {!user ? (
         <div className="flex min-h-screen items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-xl border border-slate-200 overflow-hidden">
+          <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl border border-slate-100 overflow-hidden">
             <div className="p-10">
-              <div className="flex justify-center mb-6">
-                <div className="bg-blue-600 p-4 rounded-2xl shadow-lg">
+              <div className="flex justify-center mb-8">
+                <div className="bg-blue-600 p-4 rounded-2xl shadow-xl">
                   <ShieldCheck className="w-8 h-8 text-white" />
                 </div>
               </div>
-              
-              <h1 className="text-2xl font-bold text-center mb-2">
-                {authMode === 'login' ? 'Bienvenido' : 'Nueva Cuenta'}
+              <h1 className="text-3xl font-bold text-center mb-2 tracking-tight">
+                {authMode === 'login' ? 'Bienvenido' : 'Registro'}
               </h1>
+              <p className="text-center text-slate-500 mb-8">Accede al panel de control</p>
 
-              <form onSubmit={handleAuth} className="space-y-4 mt-8">
+              <form onSubmit={handleAuth} className="space-y-4">
                 {authMode === 'register' && (
                   <input
                     type="text"
-                    placeholder="Nombre"
-                    className="w-full px-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder="Nombre completo"
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                     value={formData.name}
                     onChange={(e) => setFormData({...formData, name: e.target.value})}
                     required
@@ -249,8 +250,8 @@ export default function App() {
                 )}
                 <input
                   type="email"
-                  placeholder="Email"
-                  className="w-full px-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="Correo electrónico"
+                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                   value={formData.email}
                   onChange={(e) => setFormData({...formData, email: e.target.value})}
                   required
@@ -258,81 +259,88 @@ export default function App() {
                 <input
                   type="password"
                   placeholder="Contraseña"
-                  className="w-full px-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                   value={formData.password}
                   onChange={(e) => setFormData({...formData, password: e.target.value})}
                   required
                 />
-
                 <button
                   type="submit"
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-95"
                 >
-                  {authMode === 'login' ? 'Entrar' : 'Registrarse'}
+                  {authMode === 'login' ? 'Iniciar Sesión' : 'Crear Cuenta'}
                   <ArrowRight className="w-5 h-5" />
                 </button>
               </form>
 
               <button
                 onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-                className="w-full mt-6 text-sm text-slate-500 hover:text-blue-600 font-medium"
+                className="w-full mt-8 text-sm text-slate-400 hover:text-blue-600 font-medium transition-colors"
               >
-                {authMode === 'login' ? '¿No tienes cuenta? Crea una' : '¿Ya tienes cuenta? Ingresa'}
+                {authMode === 'login' ? '¿No tienes cuenta? Regístrate gratis' : '¿Ya eres miembro? Inicia sesión'}
               </button>
             </div>
           </div>
         </div>
       ) : (
         <div className="min-h-screen flex items-center justify-center p-6">
-          <div className="w-full max-w-xl">
+          <div className="w-full max-w-2xl">
             {!showProfileEditor ? (
-              <div className="bg-white rounded-[2.5rem] p-12 shadow-xl text-center border border-slate-100">
-                <div className="w-24 h-24 bg-blue-600 rounded-3xl mx-auto flex items-center justify-center text-white text-3xl font-bold mb-6 shadow-inner">
+              <div className="bg-white rounded-[3rem] p-12 shadow-2xl border border-slate-100 text-center animate-in zoom-in-95 duration-500">
+                <div className="w-24 h-24 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-3xl mx-auto flex items-center justify-center text-white text-4xl font-bold mb-8 shadow-xl">
                   {userData.displayName?.charAt(0)}
                 </div>
-                <h2 className="text-3xl font-bold mb-2">Hola, {userData.displayName}!</h2>
-                <p className="text-slate-500 mb-8">{userData.role}</p>
+                <h2 className="text-4xl font-black text-slate-900 mb-2">¡Hola, {userData.displayName}!</h2>
+                <p className="text-lg text-slate-500 mb-10">
+                   {userData.role}
+                </p>
 
-                <div className="flex gap-4">
+                <div className="flex flex-col sm:flex-row gap-4 justify-center">
                   <button
                     onClick={() => setShowProfileEditor(true)}
-                    className="flex-1 bg-slate-100 hover:bg-slate-200 py-4 rounded-2xl font-bold flex items-center justify-center gap-2"
+                    className="px-10 py-4 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-2xl flex items-center justify-center gap-2 transition-all"
                   >
-                    <Settings className="w-5 h-5" /> Perfil
+                    <Settings className="w-5 h-5" /> Ajustes
                   </button>
                   <button
-                    onClick={handleLogout}
-                    className="flex-1 bg-red-50 hover:bg-red-100 text-red-600 py-4 rounded-2xl font-bold flex items-center justify-center gap-2"
+                    onClick={() => signOut(firebaseData.auth)}
+                    className="px-10 py-4 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-2xl flex items-center justify-center gap-2 transition-all"
                   >
                     <LogOut className="w-5 h-5" /> Salir
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="bg-white rounded-[2.5rem] p-10 shadow-xl border border-slate-100">
-                <button onClick={() => setShowProfileEditor(false)} className="flex items-center gap-2 text-slate-400 mb-6">
-                  <ChevronLeft className="w-5 h-5" /> Volver
+              <div className="bg-white rounded-[2.5rem] p-10 shadow-2xl border border-slate-100 animate-in slide-in-from-bottom-4 duration-300">
+                <button onClick={() => setShowProfileEditor(false)} className="flex items-center gap-2 text-slate-400 hover:text-slate-900 mb-8 font-bold">
+                  <ChevronLeft className="w-5 h-5" /> Volver al inicio
                 </button>
-                <div className="space-y-4">
-                  <label className="block font-bold">Nombre de usuario</label>
-                  <input
-                    type="text"
-                    className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl"
-                    value={userData.displayName}
-                    onChange={(e) => setUserData({...userData, displayName: e.target.value})}
-                  />
-                  <label className="block font-bold">Rol / Puesto</label>
-                  <input
-                    type="text"
-                    className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl"
-                    value={userData.role}
-                    onChange={(e) => setUserData({...userData, role: e.target.value})}
-                  />
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2 ml-1">Nombre público</label>
+                    <input
+                      type="text"
+                      className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={userData.displayName}
+                      onChange={(e) => setUserData({...userData, displayName: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2 ml-1">Especialidad / Rol</label>
+                    <input
+                      type="text"
+                      className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={userData.role}
+                      onChange={(e) => setUserData({...userData, role: e.target.value})}
+                    />
+                  </div>
                   <button
                     onClick={saveProfile}
-                    className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg mt-4"
+                    disabled={isSaving}
+                    className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black shadow-xl hover:bg-black transition-all flex items-center justify-center gap-3"
                   >
-                    {isSaving ? 'Guardando...' : 'Guardar Cambios'}
+                    {isSaving ? <Loader2 className="animate-spin w-5 h-5" /> : <Save className="w-5 h-5" />}
+                    Actualizar Perfil
                   </button>
                 </div>
               </div>
